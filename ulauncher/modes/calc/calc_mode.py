@@ -5,11 +5,20 @@ import logging
 import math
 import operator as op
 import re
+import signal
 from decimal import Decimal
 from functools import lru_cache
 
 from ulauncher.modes.base_mode import BaseMode
 from ulauncher.modes.calc.calc_result import CalcResult
+
+class TimeoutException(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException()
+
+signal.signal(signal.SIGALRM, timeout_handler)
 
 # supported operators
 operators = {
@@ -75,13 +84,19 @@ def eval_expr(expr: str) -> str:
     >>> eval_expr('1 + 2*3**(4^5) / (6 + -7)')
     -5.0
     """
-    expr = normalize_expr(expr)
-    tree = ast.parse(expr, mode="eval").body
-    result = _eval(tree).quantize(Decimal("1e-15"))
-    int_result = int(result)
-    if result == int_result:
-        return str(int_result)
-    return str(result.normalize())  # normalize strips trailing zeros from decimal
+    signal.alarm(1)  # set a 1-second alarm
+    try:
+        expr = normalize_expr(expr)
+        tree = ast.parse(expr, mode="eval").body
+        result = _eval(tree).quantize(Decimal("1e-15"))
+        int_result = int(result)
+        if result == int_result:
+            return str(int_result)
+        return str(result.normalize())  # normalize strips trailing zeros from decimal
+    except TimeoutException:
+        return "Calculation timed out"
+    finally:
+        signal.alarm(0)  # disable alarm
 
 
 @lru_cache(maxsize=1000)
@@ -133,6 +148,8 @@ class CalcMode(BaseMode):
     def handle_query(self, query: str) -> list[CalcResult]:
         try:
             result = CalcResult(result=str(eval_expr(query)))
+        except TimeoutException:
+            result = CalcResult(error="Calculation timed out")
         except Exception:
             result = CalcResult(error="Invalid expression")
         return [result]
